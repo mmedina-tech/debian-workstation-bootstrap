@@ -1,0 +1,1 @@
+sudo nala remove vim-addon-mw-utils vim-bitbake vim-ctrlp vim-haproxy vim-icinga2 vim-julia vim-pathogen vim-puppet vim-rails vim-snipmate vim-tabular vim-textobj-user vim-tiny vim-tjp vim-tlib vim-ultisnips vim-vimerl vim-voom vim-youcompleteme

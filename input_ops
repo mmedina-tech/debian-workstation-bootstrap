@@ -1,0 +1,594 @@
+#!/bin/bash
+
+#>>>>>>>>
+# include the contents of this file at the top of any script that needs to use the op_scripting
+#   package, but you can't guarantee it is installed or where it is.
+script_dir=$(echo -e ${PATH//:/\\n} | grep -E "/op_scripting\$" | head - -n1)
+if [[ -z "$script_dir" ]] && [[ -f "$HOME/.op_scripting/path" ]]; then
+    script_dir="$(cat "$HOME/.op_scripting/path" | grep -E "/op_scripting\$" | head - -n1)"
+    if [[ ! -z "$script_dir" ]]; then
+        if [[ ! -d "$script_dir" ]] || [[ ! -f "$script_dir/git_ops" ]] ; then
+            script_dir=''
+        else
+            PATH="$PATH:$script_dir"
+            export PATH
+            export script_dir
+        fi
+    fi
+fi
+if [[ -z "$script_dir" ]]; then
+    (( arg = ${#BASH_ARGV[*]} - 1 ))
+    if [[ "$0" = '-su' ]] || [[ "$0" = '-bash' ]] || [[ "$(basename "$0")" = "bash" ]]; then
+        target="${BASH_ARGV[$arg]}"
+        search_dir="$(dirname "$(realpath "$target")")"
+        [[ "$search_dir" = '.' ]] && search_dir="$PWD"
+    else
+        search_dir="$(dirname "$(realpath "$0")")"
+        target="$0"
+    fi
+    while [[ "$search_dir" != "/" && ! -d "$search_dir/op_scripting" ]]; do
+        search_dir="$(dirname "$search_dir")"
+    done
+    [[ "$search_dir" != "/" ]] && script_dir="$search_dir/op_scripting"
+    if [[ ! -z "$script_dir" ]]; then
+        PATH="$PATH:$script_dir"
+        export PATH
+        export script_dir
+        mkdir -p "$HOME/.op_scripting"
+        echo "$script_dir" > "$HOME/.op_scripting/path"
+    fi
+fi
+if [[ -z "$script_dir" ]]; then
+    echo -e "Unable to locate the op_scripting package dir.\n"\
+            "\tnot referenced in \$PATH,\n"\
+            "\tnot contained in '$HOME/.op_scripting/path'\n"\
+            "\tnot associated with '$target'." >&2
+    if [[ "$target" != "$0" ]]; then
+        return 1
+    else
+        exit 1
+    fi
+fi
+#<<<<<<<<
+
+#SYNOPSIS: provides a selection of input functions
+
+E_OPTERR=65
+
+verbose=false
+[[ "$1" = '-v' ]] && verbose=true
+
+
+$verbose && $script_dir/header 50 "input_ops"
+
+#ENTRY: pause_here [prompt]: displays prompt and waits for the user to press enter
+#ENTRY: : defaults to "Press [ENTER] to continue"
+$verbose && $script_dir/usage pause_here
+
+function pause_here {
+    local prompt
+    prompt="$@"
+    [[ -z "$prompt" ]] && \
+        prompt="Press [ENTER] to continue."
+    echo -en "$prompt"
+    read -r
+    return 0
+}
+
+#ENTRY: yes_no [-y | -n] prompt: prompts for a yes or no response
+#ENTRY: : -y | -n    default yes or no
+#ENTRY: : on exit status 0, response is in $REPLY
+$verbose && $script_dir/usage yes_no
+
+function yes_no {
+    local def
+    def=''
+    local defy
+    defy=false
+    local defn
+    defn=false
+    local valid
+    valid=true
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -y)defy=true;def='y';;
+            -n)defn=true;def='n';;
+            *)break;;
+        esac
+        shift 1
+    done
+    if $defy && $defn; then
+        echo "yes_no: options -y and -n are contradictory." >&2
+        valid=false
+    fi
+    local prompt
+    prompt="$@"
+    if [[ -z "$prompt" ]]; then
+        echo "yes_no: a prompt is required." >&2
+        valid=false
+    fi
+    if ! $valid; then
+        $script_dir/usage yes_no >&2
+        return $E_OPTERR
+    fi
+    prompt="$prompt ("
+    $defy && prompt+='Y'
+    $defy || prompt+='y'
+    prompt+='|'
+    $defn && prompt+='N'
+    $defn || prompt+='n'
+    prompt+=') '
+
+    while true; do
+        echo -en "$prompt"
+        read -r
+        [[ -z "$REPLY" ]] && REPLY="$def"
+        [[ "$REPLY" =~ ^[yYnN]$ ]] && break
+        echo "Invalid response '$REPLY'"
+        echo "Respond with one of y Y n N."
+    done
+    export REPLY
+    return 0
+}
+
+#ENTRY: get_input [--confirm] [--allow_blank] prompt [default]: prompts for input into $REPLY
+$verbose && $script_dir/usage get_input
+function get_input {
+    local confirm
+    local allow_blank
+    confirm=false
+    allow_blank=false
+    while (( $# > 0 )); do 
+        case $1 in
+            --confirm) confirm=true;;
+            --allow_blank) allow_blank=true;;
+            *) break;;
+        esac
+        shift 1
+    done
+    if (( $# < 1 )); then
+        $script_dir/usage get_input
+        return $E_OPTERR
+    fi
+    local response
+    local ans
+    while true; do
+        echo -en "$1"
+        read -r response
+        [[ -z "$response" ]] && response="$2"
+        if [[ -z "$response" ]] && ! $allow_blank; then
+            echo -e "A non-empty response is expected."
+        else
+            REPLY='y'
+            $confirm && yes_no -y "Confirm '$response'"
+            [[ "$REPLY" =~ [yY] ]] && break
+        fi
+    done
+    REPLY="$response"
+    export REPLY
+    return 0
+}
+
+#ENTRY: select_of [--confirm] prompt options: allows user to select into $REPLY
+$verbose && $script_dir/usage select_of
+function select_of {
+    local confirm
+    confirm=false
+    if [[ "$1" = '--confirm' ]]; then
+        confirm=true
+        shift 1
+    fi
+    if [[ $# < 2 ]]; then
+        echo "ERROR: a prompt is required followed by at least one option." >&2
+        $script_dir/usage select_of >&2
+        return $E_OPTERR
+    fi
+    local PS3
+    PS3="$1"
+    shift 1
+    local selection
+    select selection
+    do
+        if [[ -z "$selection" ]]; then
+            echo "That is not a valid response."
+        else
+            REPLY='y'
+            $confirm && yes_no -y "Confirm '$selection'?"
+            [[ "$REPLY" =~ [yY] ]] && break
+        fi
+    done
+    REPLY="$selection"
+    export REPLY
+    return 0
+}
+
+#ENTRY: is_counting str: checks if str is a counting number
+$verbose && $script_dir/usage is_counting
+function is_counting {
+    [[ "$1" =~ ^[1-9][0-9]*$ ]] && return 0
+    return 1
+}
+
+#ENTRY: select_multiple_of options prompt selections: allows multiple selection
+#ENTRY: ---: $REPLY is an array containing selected items.
+#ENTRY: ---: Available options:
+#ENTRY: ---:    --confirm           confirm each selection.
+#ENTRY: ---:    --allow-duplicates  allow repeat selections.
+
+$verbose && $script_dir/usage select_multiple_of
+function select_multiple_of {
+    local confirm
+    local allow_duplicates
+    confirm=false
+    allow_duplicates=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --confirm) confirm=true;;
+            --allow-duplicates) allow_duplicates=true;;
+            *) break;;
+        esac
+        shift 1
+    done
+    if [[ $# < 2 ]]; then
+        $script_dir/usage select_multiple_of >&2
+        return $E_OPTERR
+    fi
+    local prompt
+    local PS3
+    prompt="$1"
+    shift 1
+    local select_array
+    select_array=()
+    local selection
+    local valid
+    while true; do
+        PS3="$prompt (items: ${#select_array[*]}): "
+        clear
+        select selection in "${@}" \
+            "[[ Commands ]]"
+        do
+            echo "$selection"
+            case "$selection" in
+                '')
+                    echo "That is not a valid response."
+                    ;;
+                '[[ Commands ]]')
+                    while true; do
+                        PS3="Command# "
+                        clear
+                        if [[ ${#select_array[*]} -eq 0 ]]; then
+                            echo "You haven't selected anything."
+                        else
+                            echo "You have selected the following:"
+                            for item in "${select_array[@]}"; do
+                                echo "   $item"
+                            done
+                        fi
+                        select option in \
+                            "[[ Done Selecting ]]" \
+                            "[[ Remove Selections ]]" \
+                            "[[ Reset Selection ]]" \
+                            "[[ Return ]]"
+                        do
+                            echo "$option"
+                            case "$option" in
+                                '')
+                                    pause_here "That is not a valid response."
+                                    break
+                                    ;;
+                                "[[ Done Selecting ]]")
+                                    yes_no -y "Selection is complete?"
+                                    [[ "$REPLY" =~ [yY] ]] && break 4
+                                    break 3
+                                    ;;
+                                "[[ Remove Selections ]]")
+                                    while true; do
+                                        if [[ ${#select_array[*]} -eq 0 ]]; then
+                                            echo "You haven't selected anything."
+                                            pause_here
+                                            break
+                                        else
+                                            while true; do
+                                                clear
+                                                echo "You have selected the following:"
+                                                for idx in ${!select_array[*]}; do
+                                                    echo -e "$(((idx+1))) \t${select_array[$idx]}"
+                                                done
+                                                echo "Press [ENTER] to stop selecting..."
+                                                get_input --allow_blank "Entry to remove #? "
+                                                [[ -z "$REPLY" ]] && break 3
+                                                if is_counting "$REPLY"; then
+                                                    idx=$(((REPLY-1)))
+                                                    if [[ $idx -lt ${#select_array[*]} ]]; then
+                                                        local entry
+                                                        entry="${select_array[$idx]}"
+                                                        select_array=("${select_array[@]:0:$idx}" "${select_array[@]:$REPLY}")
+                                                        echo "Removed $REPLY: '$entry'"
+                                                    else
+                                                        echo "Invalid value '$REPLY'."
+                                                    fi
+                                                else
+                                                    echo "Invalid value '$REPLY'."
+                                                fi
+                                                pause_here
+                                            done
+                                        fi
+                                    done
+                                    ;;
+                                "[[ Reset Selection ]]")
+                                    yes_no -n "Confirm reset?"
+                                    [[ "$REPLY" =~ [yY] ]] && select_array=()
+                                    PS3="$prompt (items: ${#select_array[*]}): "
+                                    break 3
+                                    ;;
+                                "[[ Return ]]")
+                                    break 3
+                                    ;;
+                            esac
+                        done
+                    done
+                    ;;
+                *)
+                    REPLY='y'
+                    if ! $allow_duplicates; then
+                        valid=true
+                        for item in "${select_array[@]}"; do
+                            [[ "$item" = "$selection" ]] && valid=false
+                        done
+                    fi
+                    if $valid; then
+                        $confirm && yes_no -y "Confirm '$selection'?"
+                        if [[ "$REPLY" =~ [yY] ]]; then
+                            select_array[${#select_array[*]}]="$selection"
+                            PS3="$prompt (items: ${#select_array[*]}): "
+                        fi
+                    else
+                        echo "'$selection' is already selected."
+                    fi
+                    ;;
+            esac
+        done
+    done
+    echo "Preparing reply ..."
+    REPLY=()
+    local i
+    for i in ${!select_array[*]}; do
+        REPLY[$i]="${select_array[$i]}"
+    done
+    export REPLY
+    return 0
+}
+
+#ENTRY: get_input_of [options] alternatives: a more tailorable input, can restrict response
+#ENTRY: : on exit status 0, response is available in $REPLY
+#ENTRY: ------: Available options:
+#ENTRY: ------:    -a --allow-empty     Allow an empty response. (Cannot use -d)
+#ENTRY: ------:    -c --confirm         Confirm the response.
+#ENTRY: ------:    -d --default DEFAULT Sets a default response. (Cannot use -a)
+#ENTRY: ------:       --help            Displays usage info and exits.
+#ENTRY: ------:    -i --input-line      Use line input only. (Opposit of -s)
+#ENTRY: ------:    -l --later           Confirm after validity check. (Used with -c)
+#ENTRY: ------:    -n --no-display      Do not display the list of alternatives.
+#ENTRY: ------:                         (cannot use with -s)
+#ENTRY: ------:    -p --prompt PROMPT   Sets the prompt string. (Default is none.)
+#ENTRY: ------:    -s --input-select    Use select input only. (Opposit of -i)
+#ENTRY: ------:                         (cannot use -n)(-a or -d is included in list)
+#ENTRY: ------:       --                No further options. (Especially useful when an
+#ENTRY: ------:                         alternative might be read as an option.)
+$verbose && $script_dir/usage get_input_of
+function get_input_of {
+    local mode_border
+    mode_border=true
+    local mode_border_size
+    mode_border_size=1
+    local mode_border_count
+    mode_border_count=1
+    
+    local response
+    local display_options
+    local display_options_opt
+    response=''
+    display_options=true
+    display_options_opt=''
+    local confirm_response
+    local confirm_after
+    confirm_response=false
+    confirm_after=false
+    local allow_empty
+    local allow_empty_opt
+    allow_empty=false
+    allow_empty_opt=''
+    local prompt
+    prompt=''
+    local invalid_call
+    invalid_call=false
+    local default_value
+    local default_value_opt
+    default_value=''
+    default_value_opt=''
+    local input_line
+    local input_line_opt
+    input_line=false
+    input_line_opt=''
+    local input_select
+    local input_select_opt
+    input_select=false
+    input_select_opt=''
+    until [[ -z "$1" ]]
+    do
+        case $1 in
+            -a|--allow-empty)
+                allow_empty=true
+                allow_empty_opt="$1"
+                ;;
+            -c|--confirm)
+                confirm_response=true
+                ;;
+            -d|--default)
+                default_value_opt="$1"
+                if [[ -z "$2" ]]; then
+                    echo "get_input_of: Option $1 requires a value." >&2
+                    invalid_call=true
+                    break
+                fi
+                default_value="$2"
+                shift 1
+                ;;
+            --help)
+                $script_dir/usage get_input_of
+                return 0
+                ;;
+            -i|--input-line) 
+                input_line=true
+                input_line_opt="$1"
+                ;;
+            -l|--later)
+                confirm_after=true
+                ;;
+            -n|--no-display)
+                display_options_opt="$1"
+                display_options=false
+                ;;
+            -p|--prompt)
+                if [[ -z "$2" ]]; then
+                    echo "get_input_of: Option $1 requires a prompt string." >&2
+                    invalid_call=true
+                    break
+                fi    
+                prompt="$2"
+                shift 1
+                ;;
+            -s|--input-select) 
+                input_select=true
+                input_select_opt="$1"
+                ;;
+            --)
+                shift 1
+                break
+                ;;
+            *)
+                break
+                ;;
+        esac
+        shift 1
+    done
+    if ! $invalid_call; then
+        if $allow_empty && [[ "$default_value" != '' ]]; then
+            echo "get_input_of: Options $allow_empty_opt and $default_value_opt are contradictory." >&2
+            invalid_call=true
+        fi
+        if $input_select && $input_line; then
+            echo "get_input_of: Options $input_select_opt and $input_line_opt are contradictory." >&2
+            invalid_call=true
+        fi
+        if $input_select && ! $display_options; then
+            echo "get_input_of: Cannot select input (Option $input_select_opt) without displaying options (Option $display_options_opt)." >&2
+            invalid_call=true
+        fi
+        if [[ -z "$1" ]]; then
+            echo "get_input_of: Call requires at least one possible response." >&2
+            invalid_call=true
+        fi
+    fi
+    if $invalid_call; then
+        $script_dir/usage get_input_of >&2
+        return $E_OPTERR
+    fi
+    declare -a args
+    local max_length=0
+    while [[ $# -gt 0 ]]
+    do
+        args[${#args[*]}]="$1"
+        [[ $max_length -lt ${#1} ]] && max_length=${#1}
+        shift 1
+    done
+    local valid
+    local PS3
+    local select_display
+    select_display=true
+    $input_line && select_display=false
+    $mode_border || select_display=false
+    $display_options || select_display=false
+    if $select_display; then
+        select_display=false
+        [[ ${#args[*]} -gt $mode_border_count ]] && select_display=true
+        [[ $max_length -gt $mode_border_size ]] && select_display=true
+    fi
+    $input_select && select_display=true
+
+    if $select_display; then
+        [[ -z "$prompt" ]] || PS3="$prompt"
+        if [[ ! -z "$default_value" ]]; then
+            valid=false
+            for item in "${args[@]}"; do
+                [[ "$item" = "$default_value" ]] && valid=true
+            done
+            if ! $valid; then
+                args=("$default_value" "${args[@]}")
+            fi
+        elif $allow_empty; then
+            #tab takes the place of an empty response
+            args=("${args[@]}" '    ') 
+        fi
+
+        valid=false
+        until $valid; do
+            select response in "${args[@]}"; do
+                if [[ -z "$response" ]]; then
+                    echo -e "That was not a valid response.\n"
+                else
+                    #tab character allows empty response
+                    [[ "$response" = '    ' ]] && response=''
+                    REPLY='y'
+                    $confirm_response && yes_no -y "Confirm '$response'?"
+                    [[ "$REPLY" =~ [yY] ]] && valid=true 
+                fi
+                break
+            done
+        done
+    else
+        local line_prompt=''
+        [[ "$prompt" =~ \?$ ]] || prompt="${prompt}?"
+        [[ -z "$prompt" ]] || line_prompt="$prompt "
+        if $display_options; then
+            line_prompt+="( ${args[0]}"
+            local cnt
+            cnt=1
+            while [[ $cnt -lt ${#args[*]} ]]; do
+                line_prompt+=" | ${args[$cnt]}"
+                (( cnt++ ))
+            done
+            line_prompt+=' ) '
+        fi
+        local gi_conf
+        gi_conf=''
+        $confirm_response && ! $confirm_after && gi_conf='--confirm'
+        local gi_blank
+        gi_blank=''
+        $allow_empty && gi_blank="--allow_blank"
+        local gi_def
+        gi_def="$default_value"
+        valid=false
+        until $valid; do
+            get_input $gi_conf $gi_blank "$line_prompt" "$gi_def"
+            valid=false
+            for item in "${args[@]}"; do
+                [[ "$item" = "$response" ]] && valid=true
+            done
+            if $valid; then
+                if $confirm_response && $confirm_after; then
+                    yes_no -y "Confirm '$response'?"
+                    [[ "$REPLY" =~ [nN] ]] && valid=false
+                fi
+                break
+            fi
+            echo "'$response' is not a valid response."
+            echo
+        done
+    fi
+    REPLY="$response"
+    export REPLY
+    return 0
+}
+
